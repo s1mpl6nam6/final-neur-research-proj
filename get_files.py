@@ -21,13 +21,16 @@ TRACKS_URL = "https://api.jamendo.com/v3.0/tracks"
 DOWNLOAD_TO = "./audio_files"
 DATA_FILE = "./audio_data.csv"
 
+BATCH_FETCH_SIZE = 200
+
 os.makedirs(DOWNLOAD_TO, exist_ok=True)
+
 
 def main():
     params = {
         "client_id": CLIENT_ID,
         "format": "json",
-        "limit": 10,
+        "limit": BATCH_FETCH_SIZE,
         "audioformat": "mp31",   
         "include": "licenses+musicinfo",
     }
@@ -35,24 +38,28 @@ def main():
     
     download_list = {}
     metadata = []
+    seen_ids = set()
 
     for genre in genres:
-        params["tags"] = genre
-        result = get_songs(params)
-        for song in result:
-            download = song["audiodownload"] if song["audiodownload"]!= '' else song["audio"]
-            if download == '':
-                print(f"Skipping song id: {song['id']} No download link")
-                continue
-            download_list[song['id']] = download
-            music_info = song['musicinfo']
-            metadata.append({
-                'id': song['id'],
-                'genres': "|".join(music_info['tags']['genres']),
-                'song_name' : song['name'],
-                'artist_name' : song["artist_name"],
-                'url' : song['shareurl']
-            })
+        # Goes through 4 pages of results
+        for i in range(4):
+            params["tags"] = genre
+            params["offset"] = i * BATCH_FETCH_SIZE
+            result = get_songs(params)
+            for song in result:
+                download = song["audiodownload"] if song["audiodownload"]!= '' else song["audio"]
+                if download == '':
+                    print(f"Skipping song id: {song['id']} No download link")
+                    continue
+                download_list[song['id']] = download
+                music_info = song['musicinfo']
+                metadata.append({
+                    'id': song['id'],
+                    'genres': "|".join(music_info['tags']['genres']),
+                    'song_name' : song['name'],
+                    'artist_name' : song["artist_name"],
+                    'url' : song['shareurl']
+                })
         print(f"Downloading {genre}")
         threaded_downloads(download_list, DOWNLOAD_TO)
         download_list = {}
@@ -67,7 +74,7 @@ def write_to_csv(file_name, data):
         print("No data to write to CSV")
         return
 
-    with open(file_name, 'w', newline="") as f:
+    with open(file_name, 'w', newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=data[0].keys())
         writer.writeheader()
         writer.writerows(data)
@@ -83,16 +90,16 @@ def get_songs(params):
     result = response["results"]
     return result
 
+def download_file(file_id, download_loc, download_link):
+    filename = os.path.join(download_loc, f"{file_id}.mp3")
+    audio = requests.get(download_link, timeout=10)
+    audio.raise_for_status()
+
+    with open(filename, "wb") as f:
+        f.write(audio.content)
 
 def threaded_downloads(download_list, download_loc):
-    def download_file(file_id, download_loc, download_link):
-        filename = os.path.join(download_loc, f"{file_id}.mp3")
-        audio = requests.get(download_link)
-        audio.raise_for_status()
-
-        with open(filename, "wb") as f:
-            f.write(audio.content)
-    with ThreadPoolExecutor(max_workers = 20) as executor:
+    with ThreadPoolExecutor(max_workers = 30) as executor:
         for id_, link in download_list.items():
             executor.submit(download_file, id_, download_loc, link)
 
