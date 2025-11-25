@@ -7,47 +7,55 @@ AUDIO_DIR = "./audio_files"
 OUTPUT_CSV = "./audio_features.csv"
 SAMPLE_SIZE = 2   # development mode
 
+# Smaller STFT window = faster
+N_FFT = 1024
+HOP = 256
+
 
 def spectral_entropy(S):
-    """Compute spectral entropy from magnitude spectrogram."""
     ps = S**2
     ps_norm = ps / np.sum(ps)
     entropy = -np.sum(ps_norm * np.log2(ps_norm + 1e-10), axis=0)
-    return np.mean(entropy)
+    return float(np.mean(entropy))
 
 
 def reduce_stats(name, arr, feats):
-    """Add mean, std, min, max for any vector-like feature."""
     feats[f"{name}_mean"] = float(np.mean(arr))
     feats[f"{name}_std"] = float(np.std(arr))
     feats[f"{name}_min"] = float(np.min(arr))
     feats[f"{name}_max"] = float(np.max(arr))
 
 
-
 def extract_features(file_path):
     try:
+        # LOAD
         y, sr = librosa.load(file_path, sr=None, mono=True)
-
         feats = {
             "file": os.path.basename(file_path),
             "duration": librosa.get_duration(y=y, sr=sr),
         }
 
+        # PRECOMPUTE STFT ONCE
+        S_complex = librosa.stft(y, n_fft=N_FFT, hop_length=HOP)
+        S = np.abs(S_complex)
+
         # BASIC FEATURES
         zcr = librosa.feature.zero_crossing_rate(y)[0]
         reduce_stats("zcr", zcr, feats)
 
-        rms = librosa.feature.rms(y=y)[0]
+        rms = librosa.feature.rms(S=S)[0]  # faster than rms(y)
         reduce_stats("rms", rms, feats)
 
-        tempo, beats = librosa.beat.beat_track(y=y, sr=sr)
+        onset_env = librosa.onset.onset_strength(S=S, sr=sr)
+        feats["onset_strength_mean"] = float(np.mean(onset_env))
+        feats["onset_rate"] = float(len(librosa.onset.onset_detect(onset_envelope=onset_env, sr=sr)))
+
+        tempo, beats = librosa.beat.beat_track(onset_envelope=onset_env, sr=sr)
         feats["tempo"] = float(tempo)
         feats["beat_count"] = len(beats)
 
-        # SPECTRAL FEATURES
-        S = np.abs(librosa.stft(y))
-
+        # SPECTRAL FEATURES (FAST)
+        
         centroid = librosa.feature.spectral_centroid(S=S, sr=sr)[0]
         reduce_stats("spectral_centroid", centroid, feats)
 
@@ -63,15 +71,13 @@ def extract_features(file_path):
         flatness = librosa.feature.spectral_flatness(S=S)[0]
         reduce_stats("spectral_flatness", flatness, feats)
 
-        feats["spectral_entropy"] = float(spectral_entropy(S))
-
+        feats["spectral_entropy"] = spectral_entropy(S)
         feats["total_energy"] = float(np.sum(S))
 
-        # MFCC + DELTAS
-        mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=20)
+        # MFCCs + DELTAS
+        mfcc = librosa.feature.mfcc(S=librosa.power_to_db(S**2), sr=sr, n_mfcc=20)
         for i in range(mfcc.shape[0]):
-            feats[f"mfcc_{i+1}_mean"] = float(np.mean(mfcc[i]))
-            feats[f"mfcc_{i+1}_std"] = float(np.std(mfcc[i]))
+            reduce_stats(f"mfcc_{i+1}", mfcc[i], feats)
 
         delta = librosa.feature.delta(mfcc)
         for i in range(delta.shape[0]):
@@ -81,30 +87,21 @@ def extract_features(file_path):
         for i in range(delta2.shape[0]):
             feats[f"delta2_{i+1}_mean"] = float(np.mean(delta2[i]))
 
-        # CHROMA FEATURES
-        chroma_cqt = librosa.feature.chroma_cqt(y=y, sr=sr)
-        feats["chroma_cqt_mean"] = float(np.mean(chroma_cqt))
+        # CHROMA FEATURES (FAST)
+        chroma_stft = librosa.feature.chroma_stft(S=S, sr=sr)
+        feats["chroma_stft_mean"] = float(np.mean(chroma_stft))
 
         chroma_cens = librosa.feature.chroma_cens(y=y, sr=sr)
         feats["chroma_cens_mean"] = float(np.mean(chroma_cens))
 
-        # original chroma_stft
-        chroma_stft = librosa.feature.chroma_stft(y=y, sr=sr)
-        feats["chroma_stft_mean"] = float(np.mean(chroma_stft))
+    
+        chroma_cqt = librosa.feature.chroma_cqt(y=y, sr=sr)
+        feats["chroma_cqt_mean"] = float(np.mean(chroma_cqt))
 
-        # TONAL FEATURES (Tonnetz)
-      
-        tonnetz = librosa.feature.tonnetz(y=librosa.effects.harmonic(y), sr=sr)
+        # TONAL FEATURES
+        harm = librosa.effects.harmonic(y)  # HPSS only once
+        tonnetz = librosa.feature.tonnetz(y=harm, sr=sr)
         feats["tonnetz_mean"] = float(np.mean(tonnetz))
-
-    
-        # TEMPORAL FEATURES
-    
-        onset_env = librosa.onset.onset_strength(y=y, sr=sr)
-        feats["onset_strength_mean"] = float(np.mean(onset_env))
-        feats["onset_rate"] = float(
-            librosa.onset.onset_detect(onset_envelope=onset_env, sr=sr).__len__()
-        )
 
         return feats
 
