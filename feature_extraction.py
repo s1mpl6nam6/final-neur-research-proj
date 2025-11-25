@@ -2,21 +2,19 @@ import os
 import librosa
 import numpy as np
 import pandas as pd
+from multiprocessing import Pool, cpu_count
+from tqdm import tqdm
 
 AUDIO_DIR = "./audio_files"
 OUTPUT_CSV = "./audio_features.csv"
-SAMPLE_SIZE = 2   # development mode
-
-# Smaller STFT window = faster
-N_FFT = 1024
-HOP = 256
+SAMPLE_SIZE = 5   # development mode
 
 
 def spectral_entropy(S):
     ps = S**2
     ps_norm = ps / np.sum(ps)
     entropy = -np.sum(ps_norm * np.log2(ps_norm + 1e-10), axis=0)
-    return float(np.mean(entropy))
+    return np.mean(entropy)
 
 
 def reduce_stats(name, arr, feats):
@@ -28,34 +26,27 @@ def reduce_stats(name, arr, feats):
 
 def extract_features(file_path):
     try:
-        # LOAD
         y, sr = librosa.load(file_path, sr=None, mono=True)
+
         feats = {
             "file": os.path.basename(file_path),
             "duration": librosa.get_duration(y=y, sr=sr),
         }
 
-        # PRECOMPUTE STFT ONCE
-        S_complex = librosa.stft(y, n_fft=N_FFT, hop_length=HOP)
-        S = np.abs(S_complex)
-
         # BASIC FEATURES
         zcr = librosa.feature.zero_crossing_rate(y)[0]
         reduce_stats("zcr", zcr, feats)
 
-        rms = librosa.feature.rms(S=S)[0]  # faster than rms(y)
+        rms = librosa.feature.rms(y=y)[0]
         reduce_stats("rms", rms, feats)
 
-        onset_env = librosa.onset.onset_strength(S=S, sr=sr)
-        feats["onset_strength_mean"] = float(np.mean(onset_env))
-        feats["onset_rate"] = float(len(librosa.onset.onset_detect(onset_envelope=onset_env, sr=sr)))
-
-        tempo, beats = librosa.beat.beat_track(onset_envelope=onset_env, sr=sr)
+        tempo, beats = librosa.beat.beat_track(y=y, sr=sr)
         feats["tempo"] = float(tempo)
         feats["beat_count"] = len(beats)
 
-        # SPECTRAL FEATURES (FAST)
-        
+        # SPECTRAL FEATURES
+        S = np.abs(librosa.stft(y))  # DEFAULT = 2048 FFT, 512 hop
+
         centroid = librosa.feature.spectral_centroid(S=S, sr=sr)[0]
         reduce_stats("spectral_centroid", centroid, feats)
 
@@ -71,13 +62,14 @@ def extract_features(file_path):
         flatness = librosa.feature.spectral_flatness(S=S)[0]
         reduce_stats("spectral_flatness", flatness, feats)
 
-        feats["spectral_entropy"] = spectral_entropy(S)
+        feats["spectral_entropy"] = float(spectral_entropy(S))
         feats["total_energy"] = float(np.sum(S))
 
-        # MFCCs + DELTAS
-        mfcc = librosa.feature.mfcc(S=librosa.power_to_db(S**2), sr=sr, n_mfcc=20)
+        # MFCC + DELTAS
+        mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=20)
         for i in range(mfcc.shape[0]):
-            reduce_stats(f"mfcc_{i+1}", mfcc[i], feats)
+            feats[f"mfcc_{i+1}_mean"] = float(np.mean(mfcc[i]))
+            feats[f"mfcc_{i+1}_std"] = float(np.std(mfcc[i]))
 
         delta = librosa.feature.delta(mfcc)
         for i in range(delta.shape[0]):
@@ -87,49 +79,60 @@ def extract_features(file_path):
         for i in range(delta2.shape[0]):
             feats[f"delta2_{i+1}_mean"] = float(np.mean(delta2[i]))
 
-        # CHROMA FEATURES (FAST)
-        chroma_stft = librosa.feature.chroma_stft(S=S, sr=sr)
-        feats["chroma_stft_mean"] = float(np.mean(chroma_stft))
+        # CHROMA FEATURES (librosa defaults, including CQT)
+        chroma_cqt = librosa.feature.chroma_cqt(y=y, sr=sr)
+        feats["chroma_cqt_mean"] = float(np.mean(chroma_cqt))
 
         chroma_cens = librosa.feature.chroma_cens(y=y, sr=sr)
         feats["chroma_cens_mean"] = float(np.mean(chroma_cens))
 
-    
-        chroma_cqt = librosa.feature.chroma_cqt(y=y, sr=sr)
-        feats["chroma_cqt_mean"] = float(np.mean(chroma_cqt))
+        chroma_stft = librosa.feature.chroma_stft(y=y, sr=sr)
+        feats["chroma_stft_mean"] = float(np.mean(chroma_stft))
 
-        # TONAL FEATURES
-        harm = librosa.effects.harmonic(y)  # HPSS only once
-        tonnetz = librosa.feature.tonnetz(y=harm, sr=sr)
+        # TONAL FEATURES (Tonnetz)
+        tonnetz = librosa.feature.tonnetz(y=librosa.effects.harmonic(y), sr=sr)
         feats["tonnetz_mean"] = float(np.mean(tonnetz))
+
+        # TEMPORAL FEATURES
+        onset_env = librosa.onset.onset_strength(y=y, sr=sr)
+        feats["onset_strength_mean"] = float(np.mean(onset_env))
+        feats["onset_rate"] = float(
+            len(librosa.onset.onset_detect(onset_envelope=onset_env, sr=sr))
+        )
 
         return feats
 
     except Exception as e:
-        print(f"Error processing {file_path}: {e}")
-        return None
+        return {"file": os.path.basename(file_path), "error": str(e)}
+
+
+def process_file(fpath):
+    return extract_features(fpath)
 
 
 def main():
-    files = [os.path.join(AUDIO_DIR, f) for f in os.listdir(AUDIO_DIR) if f.endswith(".mp3")]
+    files = [
+        os.path.join(AUDIO_DIR, f)
+        for f in os.listdir(AUDIO_DIR)
+        if f.lower().endswith(".mp3")
+    ]
 
     if SAMPLE_SIZE:
         print(f"Using sample size = {SAMPLE_SIZE} for development")
         files = files[:SAMPLE_SIZE]
 
-    print(f"Processing {len(files)} audio files...")
+    num_workers = min(cpu_count(), 8)
+    print(f"Processing {len(files)} files with {num_workers} workers...")
 
-    all_feats = []
-    for fpath in files:
-        print(f"Processing {os.path.basename(fpath)}…")
-        feats = extract_features(fpath)
-        if feats:
-            all_feats.append(feats)
+    # multiprocess
+    with Pool(num_workers) as pool:
+        results = list(tqdm(pool.imap_unordered(process_file, files), total=len(files)))
 
-    df = pd.DataFrame(all_feats)
+    # save dataframe including error rows
+    df = pd.DataFrame(results)
     df.to_csv(OUTPUT_CSV, index=False)
 
-    print(f"\nCompleted. Saved dataset to {OUTPUT_CSV}")
+    print(f"\nCompleted! Saved to {OUTPUT_CSV}")
 
 
 if __name__ == "__main__":
