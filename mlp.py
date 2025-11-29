@@ -9,7 +9,7 @@ from tensorflow.keras.callbacks import EarlyStopping
 
 
 # Load dataset
-df = pd.read_csv("final_audio_dataset.csv")
+df = pd.read_csv("cleaned_audio_dataset.csv")
 df["genre_list"] = df["genres"].apply(lambda x: str(x).split("|"))
 
 drop_cols = ["file", "genres", "song_name", "artist_name", "url", "id"]
