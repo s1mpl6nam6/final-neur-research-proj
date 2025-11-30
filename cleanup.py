@@ -13,8 +13,7 @@ df["genre_list"] = df["genres"].apply(lambda x: str(x).split("|"))
 # -----------------------------
 allowed_genres = {
     "electronic", "pop", "rock", "hiphop", "house", "jazz", "rnb", "rap",
-    "classical", "country", "folk", "ambient", "dance",
-    "techno", "metal", "soul", "funk", "indie", "blues", "trap"
+    "classical", "country"
 }
 
 # -----------------------------
