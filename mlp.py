@@ -8,6 +8,21 @@ from tensorflow.keras import layers, models
 from tensorflow.keras.callbacks import EarlyStopping
 
 
+def hamming_accuracy(y_true, y_pred):
+    # Cast labels to float32 so types match
+    y_true = tf.cast(y_true, tf.float32)
+    
+    # Convert predictions to binary using threshold 0.5
+    y_pred_binary = tf.cast(y_pred > 0.5, tf.float32)
+    
+    # Compare element-wise
+    correct = tf.cast(tf.equal(y_true, y_pred_binary), tf.float32)
+    
+    # Mean over all labels & samples
+    return tf.reduce_mean(correct)
+
+
+
 # Load dataset
 df = pd.read_csv("cleaned_audio_dataset.csv")
 df["genre_list"] = df["genres"].apply(lambda x: str(x).split("|"))
@@ -48,7 +63,7 @@ def build_baseline_model():
     model.compile(
         optimizer="adam",
         loss="binary_crossentropy",
-        metrics=["accuracy"]
+        metrics=["accuracy", hamming_accuracy]
     )
     return model
 
@@ -70,7 +85,8 @@ model.fit(
 
 
 # Evaluate on Test Set
-test_loss, test_accuracy = model.evaluate(X_test, y_test, verbose=0)
+test_loss, test_accuracy, test_hamming = model.evaluate(X_test, y_test, verbose=0)
 
 print("Baseline Test Loss:", test_loss)
 print("Baseline Test Accuracy:", test_accuracy)
+print("Baseline Test Per-Label Accuracy:", test_hamming)
