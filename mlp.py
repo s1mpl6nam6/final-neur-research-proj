@@ -6,6 +6,7 @@ from sklearn.metrics import accuracy_score, confusion_matrix
 import tensorflow as tf
 from tensorflow.keras import layers, models
 from tensorflow.keras.callbacks import EarlyStopping
+import csv
 
 
 def hamming_accuracy(y_true, y_pred):
@@ -86,6 +87,20 @@ model.fit(
 
 # Evaluate on Test Set
 test_loss, test_accuracy, test_hamming = model.evaluate(X_test, y_test, verbose=0)
+
+# Save model weights to CSV
+weights = model.get_weights()
+with open("model_weights.csv", "w", newline="") as f:
+    writer = csv.writer(f)
+    writer.writerow(["layer", "weight_index", "shape", "values"])
+
+    for i, w in enumerate(weights):
+        writer.writerow([
+            f"weight_{i}",
+            i,
+            w.shape,
+            w.flatten().tolist()
+        ])
 
 print("Baseline Test Loss:", test_loss)
 print("Baseline Test Accuracy:", test_accuracy)
